@@ -6,6 +6,8 @@ class MessageViewModel: ObservableObject {
     @Published var scheduledMessages: [Message] = []
     @Published var sentMessages: [Message] = []
     
+    private let backendService = BackendService()
+    
     init() {
         loadMessages()
         requestNotificationPermission()
@@ -38,9 +40,22 @@ class MessageViewModel: ObservableObject {
     }
     
     func scheduleMessage(_ message: Message) {
-        scheduledMessages.append(message)
-        scheduleNotification(for: message)
-        saveMessages()
+        Task {
+            do {
+                try await backendService.scheduleMessage(
+                    recipient: message.recipient,
+                    message: message.messageText,
+                    scheduledTime: message.scheduledDate
+                )
+                
+                await MainActor.run {
+                    scheduledMessages.append(message)
+                    saveMessages()
+                }
+            } catch {
+                print("Error scheduling message: \(error)")
+            }
+        }
     }
     
     private func scheduleNotification(for message: Message) {
@@ -103,11 +118,8 @@ class MessageViewModel: ObservableObject {
             return false
         }
         
-        // Pre-format the message with any templates or custom formatting
-        let formattedMessage = formatMessage(message)
-        
-        // Use the API URL format
-        let urlString = "https://api.whatsapp.com/send?phone=\(validNumber.dropFirst())&text=\(formattedMessage.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
+        // Use universal link format for WhatsApp
+        let urlString = "https://wa.me/\(validNumber.dropFirst())?text=\(message.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"
         
         guard let url = URL(string: urlString) else {
             print("Invalid URL")
@@ -115,7 +127,7 @@ class MessageViewModel: ObservableObject {
         }
         
         // Check if WhatsApp is installed
-        if UIApplication.shared.canOpenURL(url) {
+        if UIApplication.shared.canOpenURL(URL(string: "whatsapp://")!) {
             DispatchQueue.main.async {
                 UIApplication.shared.open(url, options: [:]) { success in
                     if success {
@@ -125,9 +137,13 @@ class MessageViewModel: ObservableObject {
                 }
             }
             return true
+        } else {
+            // If WhatsApp is not installed, open in Safari
+            DispatchQueue.main.async {
+                UIApplication.shared.open(url, options: [:], completionHandler: nil)
+            }
+            return true
         }
-        
-        return false
     }
     
     private func formatMessage(_ message: String) -> String {
